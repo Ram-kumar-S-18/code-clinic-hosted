@@ -1,0 +1,438 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Code-Clinic (WebSocket)</title>
+
+    <!-- Tailwind CSS CDN -->
+    <script src="https://cdn.tailwindcss.com"></script>
+
+    <!-- Google Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Roboto+Mono:wght@400;700&family=Exo+2:wght@700;900&display=swap" rel="stylesheet">
+
+    <!-- Custom Styles -->
+    <style>
+        body { 
+            background-color: #0D1117; 
+            font-family: 'Roboto Mono', monospace; 
+        }
+        .font-display { 
+            font-family: 'Exo 2', sans-serif; 
+        }
+        .view {
+            display: none;
+        }
+        .question-textarea {
+            height: 150px;
+        }
+        /* Style for code blocks */
+        pre {
+            background-color: #161B22;
+            border: 1px solid #30363d;
+            border-radius: 6px;
+            padding: 16px;
+            font-size: 0.875em;
+            overflow-x: auto;
+            white-space: pre-wrap;
+            word-wrap: break-word;
+        }
+    </style>
+</head>
+<body class="text-gray-200">
+    <!-- Decorative background -->
+    <div class="absolute top-0 left-0 w-full h-full bg-[radial-gradient(circle_at_top_left,_rgba(56,189,248,0.1),_transparent_30%)]"></div>
+    <div class="absolute top-0 right-0 w-full h-full bg-[radial-gradient(circle_at_top_right,_rgba(139,92,246,0.1),_transparent_40%)]"></div>
+
+    <main class="relative z-10">
+        <div id="connection-status" class="fixed top-2 right-2 text-xs font-mono p-2 rounded-md z-50"></div>
+        <div id="landing-view" class="view"></div>
+        <div id="participant-view" class="view"></div>
+        <div id="admin-view" class="view"></div>
+    </main>
+
+    <div id="form-modal" class="hidden fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50 p-4"></div>
+
+    <script type="module">
+        // --- GLOBAL STATE ---
+        let ws;
+        let eventState = {};
+        let timerInterval;
+        let currentView = localStorage.getItem('codeClinicView_ws') || 'landing';
+        let currentTeamId = localStorage.getItem('codeClinicTeamId_ws') || null;
+        let userId = localStorage.getItem('codeClinicUserId_ws') || `user-${Math.random().toString(36).substring(2, 10)}`;
+        localStorage.setItem('codeClinicUserId_ws', userId);
+
+        // --- SVG Icons ---
+        const CodeBracketIcon = (c="h-16 w-16")=>`<svg xmlns="http://www.w3.org/2000/svg" class="${c} text-cyan-400" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 20l4-16m4 4l4 4-4 4M6 16l-4-4 4-4"/></svg>`;
+        const CheckCircleIcon = (c="h-5 w-5")=>`<svg xmlns="http://www.w3.org/2000/svg" class="${c} text-green-400" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clip-rule="evenodd"/></svg>`;
+        const ClockIcon = (c="h-5 w-5")=>`<svg xmlns="http://www.w3.org/2000/svg" class="${c} text-yellow-400" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm1-12a1 1 0 10-2 0v4a1 1 0 00.293.707l2.828 2.829a1 1 0 101.414-1.415L11 9.586V6z" clip-rule="evenodd"/></svg>`;
+        const LeaveIcon = (c="h-6 w-6") => `<svg xmlns="http://www.w3.org/2000/svg" class="${c}" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" /></svg>`;
+
+        // --- WEBSOCKET CONNECTION ---
+        function connect() {
+            ws = new WebSocket('ws://localhost:8080');
+            const statusEl = document.getElementById('connection-status');
+
+            ws.onopen = () => {
+                console.log('Connected to server.');
+                statusEl.textContent = 'Connected';
+                statusEl.className = 'fixed top-2 right-2 text-xs font-mono p-2 rounded-md z-50 bg-green-500/20 text-green-300';
+                render(); 
+            };
+
+            ws.onmessage = (message) => {
+                const { type, payload } = JSON.parse(message.data);
+                if (type === 'stateUpdate') {
+                    eventState = payload;
+                    render(); 
+                }
+            };
+
+            ws.onclose = (event) => {
+                console.log('Disconnected from server.');
+                if (event.code === 1006) {
+                    statusEl.innerHTML = `<strong>Connection Failed.</strong><br>Is the server running? (node server.js)`;
+                    statusEl.className = 'fixed top-2 right-2 text-xs font-mono p-2 rounded-md z-50 bg-red-500/20 text-red-300 text-center';
+                    console.error('Connection failed. Please ensure the node server.js is running in your terminal.');
+                } else {
+                    statusEl.textContent = 'Reconnecting...';
+                    statusEl.className = 'fixed top-2 right-2 text-xs font-mono p-2 rounded-md z-50 bg-yellow-500/20 text-yellow-300';
+                }
+                setTimeout(connect, 3000); 
+            };
+            
+            ws.onerror = (error) => {
+                console.error('WebSocket error occurred. See the subsequent "onclose" event for details.');
+            };
+        }
+        
+        // --- Central Action Dispatcher ---
+        function sendAction(type, payload) {
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({ type, payload }));
+            } else {
+                console.error("Cannot send action: WebSocket is not open.");
+            }
+        }
+        
+        // --- NAVIGATION & ROUTING ---
+        function navigate(view, teamId = null) {
+            currentView = view;
+            currentTeamId = teamId;
+            localStorage.setItem('codeClinicView_ws', view);
+            if (teamId) localStorage.setItem('codeClinicTeamId_ws', teamId); else localStorage.removeItem('codeClinicTeamId_ws');
+            render();
+        }
+
+        function handleLeave() {
+            localStorage.removeItem('codeClinicView_ws');
+            localStorage.removeItem('codeClinicTeamId_ws');
+            navigate('landing');
+        }
+
+        function render() {
+            if (!eventState) return; 
+
+            document.querySelectorAll('.view').forEach(v => v.style.display = 'none');
+            const viewEl = document.getElementById(`${currentView}-view`);
+            if (viewEl) viewEl.style.display = 'block'; else document.getElementById('landing-view').style.display = 'block';
+
+            switch (currentView) {
+                case 'landing': renderLandingPage(); break;
+                case 'participant': renderParticipantView(); break;
+                case 'admin': renderAdminView(); break;
+                default: renderLandingPage();
+            }
+        }
+        
+        // --- LANDING PAGE & MODAL ---
+        function renderLandingPage() {
+            const view = document.getElementById('landing-view');
+            view.innerHTML = `<div class="flex flex-col items-center justify-center min-h-screen p-4 text-center">
+                    ${CodeBracketIcon()}
+                    <h1 class="font-display text-7xl md:text-8xl font-black text-white tracking-tight mt-4">Code-Clinic</h1>
+                    <p class="text-xl md:text-2xl text-cyan-300 mt-2">The Ultimate Debugging Gauntlet</p>
+                    <div class="mt-12 w-full max-w-md mx-auto space-y-4">
+                        <button id="enter-event-btn" class="w-full font-bold text-xl bg-gradient-to-r from-violet-600 to-indigo-600 hover:opacity-90 text-white py-4 px-4 rounded-lg transition duration-300 transform hover:scale-105">Enter Event</button>
+                    </div>
+                    <button id="admin-access-btn" class="mt-12 text-gray-500 hover:text-cyan-300 transition">Event Coordinator Access &rarr;</button>
+                </div>`;
+            document.getElementById('enter-event-btn').addEventListener('click', () => showFormModal('joinOrCreate'));
+            document.getElementById('admin-access-btn').addEventListener('click', () => showFormModal('login'));
+        }
+        
+        function showFormModal(mode) {
+             const modal = document.getElementById('form-modal');
+             const formStyle = "w-full text-lg bg-gray-900/50 border border-gray-700 rounded-md py-2 px-4 focus:ring-2 focus:ring-cyan-400 focus:outline-none transition";
+             const buttonStyle = "w-full font-bold text-lg bg-cyan-500 hover:bg-cyan-400 text-black py-3 px-4 rounded-lg transition duration-300 transform hover:scale-105 disabled:opacity-50";
+             let formContent = '';
+             let title = '';
+             let submitHandler;
+
+             switch(mode) {
+                case 'joinOrCreate':
+                    title = 'Join or Create a Team';
+                    formContent = `<input type="text" id="teamName" placeholder="Enter Your Team Name" class="${formStyle}" required />
+                                 <input type="text" id="userName" placeholder="Enter Your Username" class="${formStyle}" required />`;
+                    submitHandler = handleJoinOrCreateTeam;
+                    break;
+                case 'login':
+                    title = 'Coordinator Login';
+                    formContent = `<input type="text" id="adminUser" placeholder="Username" class="${formStyle}" required />
+                                 <input type="password" id="adminPass" placeholder="Password" class="${formStyle}" required />`;
+                    submitHandler = handleAdminLogin;
+                    break;
+             }
+
+             modal.innerHTML = `<div class="bg-[#161B22] border border-gray-700 rounded-2xl p-8 shadow-2xl w-full max-w-md m-4" id="modal-content">
+                    <h3 class="font-display text-3xl font-bold text-center mb-6 text-cyan-300">${title}</h3>
+                    <form id="team-form" class="space-y-4">
+                        ${formContent}
+                        <p id="form-error" class="text-red-400 text-sm h-4"></p>
+                        <button type="submit" class="${buttonStyle}">Submit</button>
+                    </form>
+                </div>`;
+             modal.style.display = 'flex';
+             modal.addEventListener('click', (e) => { if (e.target.id === 'form-modal') modal.style.display = 'none'; });
+             document.getElementById('team-form').addEventListener('submit', submitHandler);
+        }
+        
+        function handleJoinOrCreateTeam(e) {
+            e.preventDefault();
+            const form = e.target;
+            const teamName = form.querySelector('#teamName').value.trim();
+            const userName = form.querySelector('#userName').value.trim();
+            if (!teamName || !userName) { return; }
+            const teamId = teamName.toLowerCase().replace(/\s+/g, '-');
+            sendAction('joinOrCreateTeam', { teamId, teamName, userName, userId });
+            navigate('participant', teamId);
+            document.getElementById('form-modal').style.display = 'none';
+        }
+
+        function handleAdminLogin(e) {
+            e.preventDefault();
+            const form = e.target;
+            const user = form.querySelector('#adminUser').value;
+            const pass = form.querySelector('#adminPass').value;
+            const errorEl = form.querySelector('#form-error');
+
+            if (user === 'RamKumarS' && pass === '02122004') {
+                navigate('admin');
+                document.getElementById('form-modal').style.display = 'none';
+            } else {
+                errorEl.textContent = 'Invalid username or password.';
+            }
+        }
+
+        // --- PARTICIPANT VIEW ---
+        function renderParticipantView() {
+            const view = document.getElementById('participant-view');
+            const team = eventState.teams ? eventState.teams[currentTeamId] : null;
+
+            if (!team || !eventState.isInitialized) {
+                view.innerHTML = `<div class="container mx-auto p-4 md:p-8 text-center"><h1 class="text-2xl text-yellow-400">Waiting for event to be initialized by coordinator...</h1></div>`;
+                return;
+            }
+
+            const questions = eventState.round === 1 ? (eventState.round1Questions || []) : (eventState.round2Questions || []);
+            const isRoundFinished = questions.length > 0 && team.currentQuestionIndex >= questions.length;
+            const currentQuestion = isRoundFinished ? null : questions[team.currentQuestionIndex];
+            const isFinished = team.finishedMembers.includes(userId);
+
+            let questionTitle = "Waiting for Event...";
+            let questionContent = `<p>The coordinator will start the round shortly.</p>`;
+
+            if (isRoundFinished) {
+                questionTitle = "Round Complete!";
+                questionContent = "<p>Great job! Awaiting results.</p>";
+            } else if (questions.length === 0) {
+                questionTitle = "Awaiting Questions";
+                questionContent = "<p>The coordinator has not set the questions for this round yet. Please stand by.</p>";
+            } else if (currentQuestion) {
+                questionTitle = `Q${team.currentQuestionIndex + 1}: ${currentQuestion.title}`;
+                const sanitizedContent = currentQuestion.content.replace(/</g, "&lt;").replace(/>/g, "&gt;");
+                questionContent = `<pre><code>${sanitizedContent}</code></pre>`;
+            }
+
+            view.innerHTML = `<div class="container mx-auto p-4 md:p-8">
+                <div class="flex flex-wrap justify-between items-start gap-4 mb-6">
+                     <div>
+                        <h1 class="font-display text-4xl font-bold text-white">${team.name}</h1>
+                        <p class="text-gray-400">Team ID: <span class="font-mono">${currentTeamId}</span></p>
+                    </div>
+                    <div class="flex items-center gap-4">
+                        <div id="timer-display" class="font-mono text-4xl font-bold text-cyan-300">00:00:00</div>
+                        <button id="leave-btn" title="Exit to Main Menu" class="text-gray-500 hover:text-red-400 transition">${LeaveIcon()}</button>
+                    </div>
+                </div>
+                <div class="grid grid-cols-1 lg:grid-cols-3 gap-8">
+                    <div class="lg:col-span-2 bg-[#161B22]/70 border border-gray-800 rounded-lg p-6 shadow-2xl">
+                        <h2 class="font-display text-3xl font-bold text-cyan-400 mb-4">${questionTitle}</h2>
+                        <div>${questionContent}</div>
+                    </div>
+                    <div>
+                        <div class="bg-[#161B22]/70 border border-gray-800 rounded-lg p-6 shadow-2xl">
+                            <h3 class="font-display text-2xl font-bold mb-4">Team Status</h3>
+                            <ul class="space-y-3">${team.members.map(m => `<li class="flex items-center space-x-3">${team.finishedMembers.includes(m.userId)?CheckCircleIcon():ClockIcon()}<span class="text-lg">${m.userName}</span></li>`).join('')}</ul>
+                        </div>
+                        <button id="finish-btn" class="w-full mt-6 font-bold text-2xl py-4 rounded-lg transition duration-300 transform hover:scale-105">Finish Question</button>
+                    </div>
+                </div>
+            </div>`;
+            
+            const finishBtn = document.getElementById('finish-btn');
+            finishBtn.textContent = isFinished ? 'Waiting...' : 'Finish Question';
+            const isDisabled = isFinished || isRoundFinished || !eventState.timerRunning || !currentQuestion;
+            finishBtn.disabled = isDisabled;
+            finishBtn.className = `w-full mt-6 font-bold text-2xl py-4 rounded-lg transition duration-300 transform hover:scale-105 ${isDisabled ? 'bg-gray-600 cursor-not-allowed' : 'bg-green-600 hover:bg-green-500'}`;
+            finishBtn.addEventListener('click', () => sendAction('finishQuestion', { teamId: currentTeamId, userId }));
+            document.getElementById('leave-btn')?.addEventListener('click', handleLeave);
+            updateTimerDisplay();
+        }
+
+        // --- ADMIN VIEW ---
+        function renderAdminView() {
+            const view = document.getElementById('admin-view');
+            view.innerHTML = `<div class="container mx-auto p-4 md:p-8">
+                <div class="flex flex-wrap justify-between items-start gap-4 mb-8">
+                    <h1 class="font-display text-5xl font-bold text-white">Coordinator Dashboard</h1>
+                    <div class="flex items-center gap-4">
+                        <div id="timer-display" class="font-mono text-5xl font-bold text-cyan-300">00:00:00</div>
+                        <button id="leave-btn" title="Exit to Main Menu" class="text-gray-500 hover:text-red-400 transition">${LeaveIcon()}</button>
+                    </div>
+                </div>
+                ${!eventState.isInitialized ? `<div class="bg-[#161B22]/70 border border-gray-800 rounded-lg p-6"><button id="setup-event-btn" class="w-full bg-blue-600 hover:bg-blue-500 text-white font-bold py-3 px-4 rounded-lg">Initialize Event</button></div>` :
+                `<div class="grid grid-cols-1 md:grid-cols-2 gap-8">
+                    ${renderAdminControls()}
+                    ${renderLeaderboard()}
+                </div>`}
+            </div>`;
+            attachAdminListenersToDOM();
+            updateTimerDisplay();
+        }
+
+        function renderAdminControls() {
+            return `<div class="bg-[#161B22]/70 border border-gray-800 rounded-lg p-6 space-y-6">
+                    <div>
+                        <h3 class="font-display text-2xl font-bold mb-2">Timer Control (Round ${eventState.round})</h3>
+                        <div class="flex gap-4">
+                            <button id="timer-start-btn" class="flex-1 bg-green-600 hover:bg-green-500 font-bold py-2 px-4 rounded disabled:opacity-50">Start</button>
+                            <button id="timer-pause-btn" class="flex-1 bg-yellow-600 hover:bg-yellow-500 font-bold py-2 px-4 rounded disabled:opacity-50">Pause</button>
+                            <button id="timer-reset-btn" class="flex-1 bg-red-600 hover:bg-red-500 font-bold py-2 px-4 rounded">Reset</button>
+                        </div>
+                    </div>
+                    <div>
+                        <h3 class="font-display text-2xl font-bold mb-2">Event Setup</h3>
+                        <div class="space-y-4">
+                             <label class="block">Round 1 Questions (Title;;Content per line)</label>
+                             <textarea id="round1-questions" class="w-full bg-gray-900 rounded p-2 question-textarea"></textarea>
+                             <label class="block">Round 2 Questions</label>
+                             <textarea id="round2-questions" class="w-full bg-gray-900 rounded p-2 question-textarea"></textarea>
+                             <button id="update-questions-btn" class="w-full bg-indigo-600 hover:bg-indigo-500 text-white font-bold py-2 px-4 rounded-lg">Update Questions</button>
+                        </div>
+                    </div>
+                </div>`;
+        }
+
+        function renderLeaderboard() {
+            const teams = Object.values(eventState.teams || {}).sort((a, b) => {
+                if (b.currentQuestionIndex !== a.currentQuestionIndex) return b.currentQuestionIndex - a.currentQuestionIndex;
+                const lastQ = a.currentQuestionIndex - 1;
+                return (a.finishTimes[`q${lastQ}`] || 0) - (b.finishTimes[`q${lastQ}`] || 0);
+            });
+            const round1QuestionsCount = eventState.round1Questions?.length || 0;
+            const round2QuestionsCount = eventState.round2Questions?.length || 0;
+            const totalQuestions = eventState.round === 1 ? round1QuestionsCount : round2QuestionsCount;
+
+            return `<div class="bg-[#161B22]/70 border border-gray-800 rounded-lg p-6 shadow-2xl">
+                    <h2 class="font-display text-3xl font-bold mb-4 text-cyan-300">Live Scorecard</h2>
+                    <div class="overflow-x-auto"><table class="w-full text-left">
+                        <thead><tr class="border-b border-gray-700">
+                            <th class="p-4">Rank</th><th class="p-4">Team</th><th class="p-4">Solved</th><th class="p-4">Last Time</th>
+                        </tr></thead>
+                        <tbody>${teams.map((t, i) => `
+                            <tr class="border-b border-gray-800">
+                                <td class="p-4 font-bold text-xl">#${i+1}</td>
+                                <td class="p-4 font-bold text-lg">${t.name} (${t.members.length})</td>
+                                <td class="p-4 text-center text-lg">${t.currentQuestionIndex} / ${totalQuestions}</td>
+                                <td class="p-4 font-mono">${t.currentQuestionIndex > 0 ? formatTime(t.finishTimes[`q${t.currentQuestionIndex-1}`]) : '---'}</td>
+                            </tr>`).join('')}
+                        </tbody>
+                    </table></div>
+                </div>`;
+        }
+        
+        function attachAdminListenersToDOM() {
+            document.getElementById('leave-btn')?.addEventListener('click', handleLeave);
+            if (!eventState.isInitialized) {
+                document.getElementById('setup-event-btn')?.addEventListener('click', () => sendAction('initializeEvent'));
+                return;
+            }
+
+            const r1Textarea = document.getElementById('round1-questions');
+            const r2Textarea = document.getElementById('round2-questions');
+            if (r1Textarea) {
+                r1Textarea.value = (eventState.round1Questions || []).map(q => `${q.title};;${q.content}`).join('\n');
+            }
+            if (r2Textarea) {
+                r2Textarea.value = (eventState.round2Questions || []).map(q => `${q.title};;${q.content}`).join('\n');
+            }
+
+            const startBtn = document.getElementById('timer-start-btn');
+            const pauseBtn = document.getElementById('timer-pause-btn');
+            if (startBtn) startBtn.disabled = eventState.timerRunning;
+            if (pauseBtn) pauseBtn.disabled = !eventState.timerRunning;
+
+            startBtn?.addEventListener('click', () => sendAction('timerControl', { action: 'start' }));
+            pauseBtn?.addEventListener('click', () => sendAction('timerControl', { action: 'pause' }));
+            document.getElementById('timer-reset-btn')?.addEventListener('click', () => sendAction('timerControl', { action: 'reset' }));
+            
+            const getQuestionsFromText = (text) => text.split('\n').filter(line => line.includes(';;')).map(line => ({ title: line.split(';;')[0].trim(), content: line.split(';;')[1].trim() }));
+            document.getElementById('update-questions-btn')?.addEventListener('click', () => {
+                const r1Text = document.getElementById('round1-questions').value;
+                const r2Text = document.getElementById('round2-questions').value;
+                sendAction('updateQuestions', { round1Questions: getQuestionsFromText(r1Text), round2Questions: getQuestionsFromText(r2Text) });
+            });
+        }
+
+        // --- TIMER LOGIC ---
+        function updateTimerDisplay() {
+            const timerEls = document.querySelectorAll('#timer-display');
+            if (timerInterval) clearInterval(timerInterval);
+            
+            function update() {
+                if (!eventState.startTime) {
+                    timerEls.forEach(el => el.textContent = "00:00:00");
+                    return;
+                }
+                const startMillis = new Date(eventState.startTime).getTime();
+                let elapsed = 0;
+                if(eventState.timerRunning) {
+                    elapsed = Date.now() - startMillis;
+                } else {
+                    const pauseMillis = eventState.pauseTime ? new Date(eventState.pauseTime).getTime() : startMillis;
+                    elapsed = pauseMillis - startMillis;
+                }
+                timerEls.forEach(el => el.textContent = formatTime(elapsed > 0 ? elapsed : 0));
+            }
+
+            update();
+            if (eventState.timerRunning) {
+                timerInterval = setInterval(update, 1000);
+            }
+        }
+
+        function formatTime(ms) {
+            const s = Math.floor(ms / 1000);
+            return `${String(Math.floor(s/3600)).padStart(2,'0')}:${String(Math.floor((s%3600)/60)).padStart(2,'0')}:${String(s%60).padStart(2,'0')}`;
+        }
+        
+        // --- Start the app ---
+        document.addEventListener('DOMContentLoaded', connect);
+    </script>
+</body>
+</html>
+
