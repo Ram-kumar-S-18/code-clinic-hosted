@@ -1,0 +1,11 @@
+# This file tells Netlify where to find our serverless function
+[functions]
+  directory = "netlify/functions/"
+
+# This rule ensures our single-page app works correctly.
+# It tells Netlify to serve index.html for any path requested.
+[[redirects]]
+  from = "/*"
+  to = "/index.html"
+  status = 200
+
