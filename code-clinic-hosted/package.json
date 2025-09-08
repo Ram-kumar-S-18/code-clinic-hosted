@@ -1,0 +1,7 @@
+{
+  "name": "code-clinic-serverless",
+  "version": "1.0.0",
+  "dependencies": {
+    "ably": "^1.2.30"
+  }
+}
